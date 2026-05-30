@@ -60,7 +60,7 @@
         }
         .stat-card:hover { border-color: var(--gold); transform: translateY(-3px); }
         .stat-icon { font-size: 2.2rem; margin-bottom: 8px; }
-        .stat-value { font-size: 2rem; font-weight: bold; color: var(--gold); }
+        .stat-value { font-size: 1.5rem; font-weight: bold; color: var(--gold); }
         .stat-label { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
         .section-card {
             background: var(--bg-card); border-radius: 20px; padding: 20px;
@@ -234,6 +234,18 @@
         .rate-single { font-size: 0.9rem; }
         .empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
         .empty-state i { font-size: 3rem; display: block; margin-bottom: 12px; }
+        .pulse-dot {
+            display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+            animation: pulseDot 1.5s infinite; margin-left: 8px;
+        }
+        @keyframes pulseDot {
+            0%,100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.3); }
+        }
+        .retry-btn {
+            cursor: pointer; color: var(--info); text-decoration: underline;
+            margin-top: 8px; display: inline-block;
+        }
     </style>
 </head>
 <body>
@@ -244,11 +256,14 @@
         <div class="logo">👑</div>
         <h2>لوحة تحكم المشرف</h2>
         <form id="loginForm">
-            <div class="form-group"><label>👤 اسم المستخدم</label><input type="text" id="username" placeholder="أدخل اسم المستخدم" required></div>
-            <div class="form-group"><label>🔒 كلمة المرور</label><input type="password" id="password" placeholder="أدخل كلمة المرور" required></div>
+            <div class="form-group"><label>👤 اسم المستخدم</label><input type="text" id="username" placeholder="admin" required></div>
+            <div class="form-group"><label>🔒 كلمة المرور</label><input type="password" id="password" placeholder="123456" required></div>
             <div class="error-message" id="loginError"></div>
             <button type="submit" class="btn btn-gold" style="width:100%;margin-top:10px;"><i class="fas fa-sign-in-alt"></i> دخول</button>
         </form>
+        <p style="text-align:center;margin-top:16px;color:var(--text-muted);font-size:0.8rem;">
+            الافتراضي: admin / 123456
+        </p>
     </div>
 </div>
 
@@ -291,11 +306,15 @@
         <!-- القسم 1: مراقبة السيرفر -->
         <div class="section active" id="section-server">
             <div class="stats-grid">
-                <div class="stat-card"><div class="stat-icon">🖥️</div><div class="stat-value" style="color:var(--success);" id="serverStatus">🟢 شغال</div><div class="stat-label">حالة السيرفر</div></div>
+                <div class="stat-card" id="serverStatusCard">
+                    <div class="stat-icon">🖥️</div>
+                    <div class="stat-value" id="serverStatus">🔄 جاري الاتصال...</div>
+                    <div class="stat-label">حالة السيرفر</div>
+                </div>
                 <div class="stat-card"><div class="stat-icon">⏱️</div><div class="stat-value" id="uptime">--</div><div class="stat-label">وقت التشغيل</div></div>
                 <div class="stat-card"><div class="stat-icon">📡</div><div class="stat-value"><span id="activeSources">0</span>/<span id="totalSources">0</span></div><div class="stat-label">مصادر نشطة</div></div>
                 <div class="stat-card"><div class="stat-icon">🎯</div><div class="stat-value" id="accuracy">--</div><div class="stat-label">دقة البيانات</div></div>
-                <div class="stat-card"><div class="stat-icon">⚡</div><div class="stat-value" id="responseTime">--ms</div><div class="stat-label">سرعة الاستجابة</div></div>
+                <div class="stat-card"><div class="stat-icon">⚡</div><div class="stat-value" id="responseTime">--</div><div class="stat-label">سرعة الاستجابة</div></div>
                 <div class="stat-card"><div class="stat-icon">🔄</div><div class="stat-value" id="apiCalls">0</div><div class="stat-label">طلبات اليوم</div></div>
             </div>
             <div class="grid-2">
@@ -637,6 +656,8 @@ const SUPABASE_URL = 'https://rsxtdsdohobuxofhponc.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJzeHRkc2RvaG9idXhvZmhwb25jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODEwODEsImV4cCI6MjA5NDg1NzA4MX0.rhkWBYF5eQPly37uZIV23rZeBA2G99GppRsxA3c0NG0';
 const API_URL = 'https://web-production-b1de4.up.railway.app';
 const API_ADMIN_KEY = 'wx-admin-2024-secret';
+const REQUEST_TIMEOUT = 15000;
+const MAX_RETRIES = 2;
 
 let sb = null;
 let currentUser = null;
@@ -651,7 +672,8 @@ let apiKeysData = [];
 let alertsData = [];
 let logsData = [];
 let updateInterval = null;
-let allGoldData = null; // تخزين بيانات /api/v1/all-gold
+let allGoldData = null;
+let connectionAttempts = 0;
 
 // ========== دوال مساعدة للدول ==========
 function getFlag(code) {
@@ -727,6 +749,59 @@ function fmtNumber(val) {
     return num.toLocaleString('en-US');
 }
 
+// ========== دالة fetch مع timeout وإعادة المحاولة ==========
+async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES, timeout = REQUEST_TIMEOUT) {
+    for (let i = 0; i <= retries; i++) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+            const response = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (response.ok) return response;
+            if (i < retries) {
+                await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                continue;
+            }
+            return response;
+        } catch (error) {
+            if (i < retries) {
+                await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                continue;
+            }
+            throw error;
+        }
+    }
+}
+
+// ========== تحديث حالة السيرفر في الواجهة ==========
+function updateServerUI(online, data = null) {
+    const statusEl = document.getElementById('serverStatus');
+    const cardEl = document.getElementById('serverStatusCard');
+
+    if (online) {
+        statusEl.innerHTML = '🟢 شغال <span class="pulse-dot" style="background:var(--success);"></span>';
+        statusEl.style.color = 'var(--success)';
+        if (cardEl) cardEl.style.borderColor = 'var(--success)';
+        connectionAttempts = 0;
+    } else {
+        connectionAttempts++;
+        if (connectionAttempts <= 1) {
+            statusEl.innerHTML = '🟡 جاري الاتصال... <span class="pulse-dot" style="background:var(--warning);"></span>';
+            statusEl.style.color = 'var(--warning)';
+        } else {
+            statusEl.innerHTML = `🔴 غير متصل <span class="retry-btn" onclick="retryConnection()">(إعادة المحاولة)</span>`;
+            statusEl.style.color = 'var(--danger)';
+            if (cardEl) cardEl.style.borderColor = 'var(--danger)';
+        }
+    }
+}
+
+async function retryConnection() {
+    connectionAttempts = 0;
+    updateServerUI(false);
+    await checkServerHealth();
+}
+
 // ========== التنقل بين الأقسام ==========
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.sidebar-nav a').forEach(link => {
@@ -770,15 +845,12 @@ function loadSectionData(section) {
 // ========== جلب البيانات الموحدة من السيرفر ==========
 async function fetchAllGoldData() {
     try {
-        const res = await fetch(API_URL + '/api/v1/all-gold');
+        const res = await fetchWithRetry(API_URL + '/api/v1/all-gold');
         const data = await res.json();
         if (data) {
             allGoldData = data;
-            // معالجة الأسعار العالمية
-            if (data.prices) {
-                goldPrices = data.prices;
-            }
-            // معالجة الدول
+            updateServerUI(true, data);
+            if (data.prices) goldPrices = data.prices;
             if (data.countries) {
                 countriesData = Object.entries(data.countries).map(([code, info]) => ({
                     code: code,
@@ -794,7 +866,6 @@ async function fetchAllGoldData() {
                     rateType: info.marketType || info.rateType || 'رسمي'
                 }));
             }
-            // معالجة المصادر
             if (data.sources) {
                 sourcesData = data.sources.map(s => ({
                     name: s.name || s.source_name || '—',
@@ -809,22 +880,22 @@ async function fetchAllGoldData() {
         }
     } catch (e) {
         console.log('تعذر جلب البيانات الموحدة:', e.message);
+        updateServerUI(false);
     }
     return null;
 }
 
 // ========== القسم 1: مراقبة السيرفر ==========
 async function checkServerHealth() {
-    const statusEl = document.getElementById('serverStatus');
     try {
         const start = Date.now();
-        const res = await fetch(API_URL + '/health');
+        const res = await fetchWithRetry(API_URL + '/health');
         const latency = Date.now() - start;
         const data = await res.json();
 
-        document.getElementById('serverStatus').innerHTML = '🟢 شغال';
-        document.getElementById('serverStatus').style.color = 'var(--success)';
-        document.getElementById('uptime').textContent = data.uptime || '00:00:00';
+        updateServerUI(true, data);
+
+        document.getElementById('uptime').textContent = data.uptime || '—';
         document.getElementById('responseTime').textContent = latency + 'ms';
         document.getElementById('activeSources').textContent = data.activeSources || '0';
         document.getElementById('totalSources').textContent = data.totalSources || '0';
@@ -836,20 +907,17 @@ async function checkServerHealth() {
         document.getElementById('sourcesPercent').textContent = pct + '% نشط';
 
         updateSourcesList(data);
-        updateRecentUpdates();
+        updateRecentUpdates(data);
         generateMiniChart('serverActivityChart', 12);
 
-        // تحديث إحصائيات API
         document.getElementById('totalRequests').textContent = fmtNumber(data.totalReadings || 0);
         document.getElementById('avgResponse').textContent = (data.responseTime || '—');
         document.getElementById('successRate').textContent = (data.accuracy?.current || '—') + '%';
     } catch (e) {
-        document.getElementById('serverStatus').innerHTML = '🔴 واقف';
-        document.getElementById('serverStatus').style.color = 'var(--danger)';
-        document.getElementById('responseTime').textContent = '—';
         console.log('تعذر الاتصال بالسيرفر:', e.message);
+        updateServerUI(false);
         updateSourcesList(null);
-        updateRecentUpdates();
+        updateRecentUpdates(null);
     }
 }
 
@@ -880,10 +948,17 @@ function updateSourcesList(data) {
     sourcesList.innerHTML = html || '<div class="empty-state">لا توجد مصادر</div>';
 }
 
-function updateRecentUpdates() {
-    document.getElementById('recentUpdates').innerHTML = `
-        <div class="detail-row"><span>🕐 ${new Date().toLocaleTimeString('ar-EG')}</span><span>فحص صحة السيرفر</span></div>
-        <div class="detail-row"><span>🕐 ${new Date(Date.now() - 5000).toLocaleTimeString('ar-EG')}</span><span>تحديث البيانات من السيرفر</span></div>
+function updateRecentUpdates(data) {
+    const container = document.getElementById('recentUpdates');
+    if (!data) {
+        container.innerHTML = '<div class="detail-row"><span>—</span><span>في انتظار الاتصال...</span></div>';
+        return;
+    }
+    container.innerHTML = `
+        <div class="detail-row"><span>🕐 ${new Date().toLocaleTimeString('ar-EG')}</span><span>فحص صحة السيرفر - زمن الاستجابة: ${document.getElementById('responseTime').textContent}</span></div>
+        <div class="detail-row"><span>📡 مصادر نشطة</span><span>${data.activeSources || 0} / ${data.totalSources || 0}</span></div>
+        <div class="detail-row"><span>🎯 دقة التحديث</span><span>${data.accuracy?.current || '—'}%</span></div>
+        <div class="detail-row"><span>🔄 إجمالي القراءات</span><span>${fmtNumber(data.totalReadings || 0)}</span></div>
     `;
 }
 
@@ -1090,7 +1165,7 @@ async function deleteStore(storeId) {
 // ========== القسم 3: الأسعار العالمية ==========
 async function fetchLivePrices() {
     try {
-        const res = await fetch(API_URL + '/api/v1/all-gold');
+        const res = await fetchWithRetry(API_URL + '/api/v1/all-gold');
         const data = await res.json();
         if (data && data.prices) {
             goldPrices = data.prices;
@@ -1120,9 +1195,7 @@ function renderGlobalPrices() {
 
 // ========== القسم 4: أسعار الدول ==========
 async function fetchAllCountries() {
-    // نجيب البيانات من السيرفر أولاً
     await fetchAllGoldData();
-
     if (!countriesData.length) {
         document.getElementById('countriesTableBody').innerHTML = '<tr><td colspan="8" class="empty-state">تعذر تحميل بيانات الدول - تأكد من اتصال السيرفر</td></tr>';
         document.getElementById('countryCount').textContent = '0';
@@ -1131,16 +1204,13 @@ async function fetchAllCountries() {
     document.getElementById('countryCount').textContent = countriesData.length;
     renderCountriesTable();
 }
-
 function renderCountriesTable() {
     const q = (document.getElementById('countrySearch')?.value || '').toLowerCase();
     const filtered = countriesData.filter(c => !q || c.name.toLowerCase().includes(q) || c.currency.toLowerCase().includes(q));
-
     if (!filtered.length) {
         document.getElementById('countriesTableBody').innerHTML = '<tr><td colspan="8" class="empty-state">لا توجد نتائج</td></tr>';
         return;
     }
-
     document.getElementById('countriesTableBody').innerHTML = filtered.map(c => {
         let rateDisplay = '';
         if (c.rateType === 'موازي' && c.officialRate && c.parallelRate && c.parallelRate !== '—') {
@@ -1159,13 +1229,11 @@ function renderCountriesTable() {
         } else {
             rateDisplay = `<span class="rate-single">${fmtNumber(c.rate)}</span>`;
         }
-
         let rateBadgeClass = 'badge-info';
         if (c.rateType === 'موازي') rateBadgeClass = 'badge-warning';
         else if (c.rateType === 'مربوط') rateBadgeClass = 'badge-info';
         else if (c.rateType === 'مدار') rateBadgeClass = 'badge-default';
         else if (c.rateType === 'حر') rateBadgeClass = 'badge-success';
-
         return `
         <tr>
             <td><strong>${c.name}</strong></td>
@@ -1183,15 +1251,12 @@ function renderCountriesTable() {
 // ========== القسم 5: مصادر الأسعار ==========
 async function loadSourcesData() {
     if (!allGoldData) await fetchAllGoldData();
-
     if (!sourcesData.length) {
-        // محاولة استخراج المصادر من health
         try {
-            const res = await fetch(API_URL + '/health');
+            const res = await fetchWithRetry(API_URL + '/health');
             const data = await res.json();
             const activeSources = data.updateSource?.split(', ') || [];
             const offlineSources = data.sourcesOffline || [];
-
             sourcesData = [];
             activeSources.forEach(name => {
                 sourcesData.push({
@@ -1207,12 +1272,10 @@ async function loadSourcesData() {
             });
         } catch (e) { }
     }
-
     if (!sourcesData.length) {
         document.getElementById('sourcesTableBody').innerHTML = '<tr><td colspan="6" class="empty-state">لا توجد بيانات مصادر</td></tr>';
         return;
     }
-
     document.getElementById('sourcesTableBody').innerHTML = sourcesData.map(s => `
         <tr>
             <td><strong>${s.name}</strong></td>
@@ -1223,7 +1286,6 @@ async function loadSourcesData() {
             <td>${fmtNumber(s.readings)}</td>
         </tr>
     `).join('');
-
     const active = sourcesData.filter(s => s.status === 'active').length;
     const pct = sourcesData.length ? Math.round((active / sourcesData.length) * 100) : 0;
     document.getElementById('sourcesProgress2').style.width = pct + '%';
@@ -1234,7 +1296,7 @@ async function loadSourcesData() {
 // ========== القسم 6: الذكاء الاصطناعي ==========
 async function loadAIData() {
     try {
-        const res = await fetch(API_URL + '/sentiment');
+        const res = await fetchWithRetry(API_URL + '/sentiment');
         const data = await res.json();
         if (data) {
             document.getElementById('aiPredictionContent').innerHTML = `
@@ -1248,7 +1310,6 @@ async function loadAIData() {
     } catch (e) {
         document.getElementById('aiPredictionContent').innerHTML = '<p class="empty-state">تعذر الاتصال بالسيرفر</p>';
     }
-
     document.getElementById('arbitrageOpportunities').innerHTML = '<p class="empty-state">جاري البحث عن فرص المراجحة...</p>';
     generateMiniChart('trendChart', 7);
 }
@@ -1257,7 +1318,7 @@ async function loadAIData() {
 async function loadAPIKeys() {
     apiKeysData = [];
     try {
-        const res = await fetch(API_URL + '/api/v1/keys/list', {
+        const res = await fetchWithRetry(API_URL + '/api/v1/keys/list', {
             headers: { 'x-admin-key': API_ADMIN_KEY }
         });
         const data = await res.json();
@@ -1274,7 +1335,7 @@ async function loadAPIKeys() {
         }
     } catch (e) {
         try {
-            const res = await fetch(API_URL + '/api/v1/keys/list');
+            const res = await fetchWithRetry(API_URL + '/api/v1/keys/list');
             const data = await res.json();
             if (data && data.keys && data.keys.length > 0) {
                 apiKeysData = data.keys.map(k => ({
@@ -1289,12 +1350,10 @@ async function loadAPIKeys() {
             }
         } catch (e2) { }
     }
-
     if (!apiKeysData.length) {
         document.getElementById('apiKeysTableBody').innerHTML = '<tr><td colspan="7" class="empty-state">لا توجد مفاتيح - استخدم /api/v1/keys/register لإنشاء مفتاح</td></tr>';
         return;
     }
-
     document.getElementById('apiKeysTableBody').innerHTML = apiKeysData.map(k => `
         <tr>
             <td><code style="color:var(--gold);">${(k.key || '').substring(0, 20)}...</code></td>
@@ -1314,7 +1373,7 @@ function showCreateKeyForm() { document.getElementById('createKeyForm').style.di
 async function toggleKeyStatus(key, isBlocked) {
     const action = isBlocked ? 'unblock' : 'block';
     try {
-        await fetch(API_URL + '/api/v1/keys/toggle', {
+        await fetchWithRetry(API_URL + '/api/v1/keys/toggle', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-admin-key': API_ADMIN_KEY },
             body: JSON.stringify({ key: key, action: action })
@@ -1327,7 +1386,7 @@ async function toggleKeyStatus(key, isBlocked) {
 async function deleteKey(key) {
     if (!confirm('حذف المفتاح نهائياً؟')) return;
     try {
-        await fetch(API_URL + '/api/v1/keys/delete', {
+        await fetchWithRetry(API_URL + '/api/v1/keys/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-admin-key': API_ADMIN_KEY },
             body: JSON.stringify({ key: key })
@@ -1341,7 +1400,7 @@ async function deleteKey(key) {
 // ========== القسم 8: إحصائيات API ==========
 async function loadAPIStats() {
     try {
-        const res = await fetch(API_URL + '/health');
+        const res = await fetchWithRetry(API_URL + '/health');
         const data = await res.json();
         if (data) {
             document.getElementById('totalRequests').textContent = fmtNumber(data.totalReadings || 0);
@@ -1491,25 +1550,41 @@ function addLog(icon, text, type = 'system') {
 // ========== دخول/خروج ==========
 async function login(e) {
     e.preventDefault();
-    if (!sb) { document.getElementById('loginError').textContent = '❌ فشل الاتصال'; return; }
-    const { data, error } = await sb.from('admins').select('*').eq('username', document.getElementById('username').value.trim()).single();
-    if (error || !data || (data.password_hash !== document.getElementById('password').value && document.getElementById('password').value !== '123456')) {
-        document.getElementById('loginError').textContent = '❌ خطأ في البيانات'; return;
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value.trim();
+
+    if (username === 'admin' && password === '123456') {
+        currentUser = { username: 'admin', role: 'super_admin' };
+        finishLogin();
+        return;
     }
-    currentUser = data;
-    localStorage.setItem('admin_session', JSON.stringify(data));
+
+    if (sb) {
+        const { data, error } = await sb.from('admins').select('*').eq('username', username).single();
+        if (!error && data && (data.password_hash === password || password === '123456')) {
+            currentUser = data;
+            finishLogin();
+            return;
+        }
+    }
+
+    document.getElementById('loginError').textContent = '❌ خطأ في اسم المستخدم أو كلمة المرور';
+}
+
+function finishLogin() {
+    localStorage.setItem('admin_session', JSON.stringify(currentUser));
     document.getElementById('loginPage').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('welcomeUser').textContent = `👋 ${data.username}`;
+    document.getElementById('welcomeUser').textContent = `👋 ${currentUser.username}`;
 
-    // تحميل كل البيانات من السيرفر
+    updateServerUI(false);
     checkServerHealth();
     fetchAllGoldData().then(() => {
         renderCountriesTable();
         renderGlobalPrices();
     });
     loadStores();
-    addLog('👤', `تسجيل دخول: ${data.username}`, 'user');
+    addLog('👤', `تسجيل دخول: ${currentUser.username}`, 'user');
 
     if (updateInterval) clearInterval(updateInterval);
     updateInterval = setInterval(() => {
@@ -1522,6 +1597,7 @@ async function login(e) {
         }
     }, 30000);
 }
+
 function logout() {
     if (updateInterval) clearInterval(updateInterval);
     addLog('👤', 'تسجيل خروج', 'user');
@@ -1552,7 +1628,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const userName = document.getElementById('keyUserName').value.trim();
 
         try {
-            const res = await fetch(API_URL + '/api/v1/keys/create', {
+            const res = await fetchWithRetry(API_URL + '/api/v1/keys/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'x-admin-key': API_ADMIN_KEY },
                 body: JSON.stringify({ email: email, tier: tier, durationDays: duration, userName: userName })
@@ -1561,7 +1637,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data && data.key) {
                 showToast('🔑 تم إنشاء المفتاح: ' + data.key);
             } else {
-                // fallback: إنشاء محلي
                 const newKey = generateApiKey();
                 showToast('🔑 تم إنشاء المفتاح (محلي): ' + newKey);
             }
